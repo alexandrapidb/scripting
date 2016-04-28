@@ -8,17 +8,39 @@
         [switch]$showAll
     )
 
+    $notFound=$false;
+
     if ($domain) {
-        $config = Get-DkimSigningConfig -Identity $domain
-        Validate-DkimConfigDomain $config -showAll:$showAll
+        $config = Get-DkimSigningConfig -Identity $domain -ErrorAction SilentlyContinue
+        if ($config) {
+            Validate-DkimConfigDomain $config -showAll:$showAll
+        } else {
+            $notFound=$true;
+        }
     }
     else {
         $configs = Get-DkimSigningConfig
-        foreach ($config in $configs) { Validate-DkimConfigDomain $config -showAll:$showAll}
+        if ($configs -and $configs.Count -gt 0) {
+            foreach ($config in $configs) { Validate-DkimConfigDomain $config -showAll:$showAll}
+        } else { 
+            Write-Host
+            Write-Host "No DKIM Signing Configs Found" -ForegroundColor Yellow
+            Write-Host
+        }
     }
 
+    if ($notFound -and $domain) {
+        Write-Host
+        Write-Host "Config for domain $($domain) Not Found" -ForegroundColor Yellow
+        Write-Host
+
+        if (!$domain.EndsWith("onmicrosoft.com") -and !$domain.EndsWith("microsoftonline.com")) {
+            Validate-DkimCnameOnly $domain
+        }
+    }
 }
 
+# Performs the main validation of a configuration
 function Validate-DkimConfigDomain
 {
     [cmdletbinding()]
@@ -147,22 +169,58 @@ function Validate-DkimConfigDomain
     }
 }
 
+# Performs a validation of the Dkim CNAMES
+function Validate-DkimCnameOnly
+{
+    [cmdletbinding()]
+    Param(
+        [parameter(Mandatory=$true)]
+        $domain
+    )
+
+    # Get the DNS ENtries
+    Write-Host "Locating DNS Entries..." -ForegroundColor Yellow
+    $cname1 = "selector1._domainkey.$($domain)"
+    $cname2 = "selector2._domainkey.$($domain)"
+
+    $cname1Dns = Resolve-DnsName -Name $cname1 -Type CNAME -ErrorAction SilentlyContinue
+    $cname2Dns = Resolve-DnsName -Name $cname2 -Type CNAME -ErrorAction SilentlyContinue
+
+    Write-Host    
+
+    if ($cname1Dns) {
+        Write-Host "DNS CNAME1 : $($cname1)" -ForegroundColor Green
+        Write-Host "Host Value : $($cname1Dns.NameHost)"
+    }
+    else {
+        write-host "CNAME1 NotFound  : $($cname1)" -ForegroundColor Red
+    }
+    
+    if ($cname2Dns) {
+        Write-Host "DNS CNAME2 : $($cname2)" -ForegroundColor Green
+        Write-Host "Host Value : $($cname2Dns.NameHost)"
+    }
+    else {
+        write-host "CNAME2 NotFound  : $($cname2)" -ForegroundColor Red
+    }           
+
+    Write-Host
+}
+
+# Compares public and published keys
 function Compare-PublicAndConfigKeys([string] $publicKey, [string] $configKey)
 {
     $match = $false;
 
-    if (![string]::IsNullOrWhiteSpace($publicKey) -and ![string]::IsNullOrWhiteSpace($configKey))
-    {     
+    if (![string]::IsNullOrWhiteSpace($publicKey) -and ![string]::IsNullOrWhiteSpace($configKey)) {     
         $regex = "p=(.*?);"
         $foundPublic = $publicKey -match $regex
         $publicValue = if ($foundPublic) { $matches[1] } else { $null }
         $foundConfig = $configKey -match $regex
         $configValue = if ($foundConfig) { $matches[1] } else { $null } 
 
-        if ($foundPublic -and $foundConfig)
-        {
-            if ($publicValue.Trim() -eq $configValue.Trim())
-            {
+        if ($foundPublic -and $foundConfig) {
+            if ($publicValue.Trim() -eq $configValue.Trim()) {
                 $match = $true;
             }
         }
